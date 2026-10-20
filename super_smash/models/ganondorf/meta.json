@@ -1,0 +1,11 @@
+{
+  "name": "ganondorf_edge_v4",
+  "character": "GANONDORF",
+  "opponent": "FOX,MARTH,CPTFALCON",
+  "stage": "FINAL_DESTINATION",
+  "frame_skip": 3,
+  "canonical_side": "right",
+  "total_steps": 21587916,
+  "trained_against": "level-9 CPU Fox, Marth, Captain Falcon + scripted ledge-camping bots",
+  "evaluation": "9/9 wins vs level-9 CPUs, average stock difference +3.22"
+}

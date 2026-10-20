@@ -16,10 +16,13 @@ faster for training.
 
 import configparser
 import itertools
+import logging
 import multiprocessing as mp
 import os
 import platform
+import shutil
 import signal
+import tempfile
 import time
 import weakref
 
@@ -30,6 +33,8 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 from stable_baselines3.common.vec_env.base_vec_env import CloudpickleWrapper
 from stable_baselines3.common.vec_env.subproc_vec_env import _worker
+
+from smash_rl.rewards import RewardTracker, RewardWeights
 
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if platform.system() == "Darwin":
@@ -71,12 +76,67 @@ GLOBAL_FEATURES = 4
 RANDOM_OPPONENTS = tuple(c for c in melee.Character
                          if c.value < NUM_CHARACTERS and c not in (melee.Character.SHEIK, melee.Character.NANA))
 IN_GAME = (melee.Menu.IN_GAME, melee.Menu.SUDDEN_DEATH)
+# A-button attacks (jabs, tilts, smashes, aerials) are contiguous in libmelee's Action enum.
+ATTACK_ACTIONS = range(melee.Action.NEUTRAL_ATTACK_1.value, melee.Action.DAIR.value + 1)
+OTHER_PORT = {1: 2, 2: 1}
 _LIVE_ENVS = weakref.WeakSet()  # envs in this process, closed when a worker exits
+PID_DIR_ENV = "SMASH_DOLPHIN_PID_DIR"  # where workers note their Dolphin's pid (see NonDaemonSubprocVecEnv)
+
+
+class _DropMenuEventNoise(logging.Filter):
+    """libmelee logs this on every frame of some menu transitions in headless mode; it is harmless."""
+
+    def filter(self, record):
+        return not str(record.msg).startswith("Got a menu event in the middle of a frame")
+
+
+logging.getLogger().addFilter(_DropMenuEventNoise())
 
 
 def _action_id(player) -> int:
     value = getattr(player.action, "value", player.action)
     return int(value) if 0 <= int(value) < NUM_ANIMATIONS else NUM_ANIMATIONS - 1
+
+
+def player_features(p, edge: float) -> np.ndarray:
+    """20 continuous features, then a character one-hot, then an action-state one-hot."""
+    f = np.zeros(PLAYER_SIZE, dtype=np.float32)
+    f[:PLAYER_FEATURES] = (
+        p.position.x / 100.0,
+        p.position.y / 100.0,
+        p.percent / 100.0,
+        p.stock / 4.0,
+        1.0 if p.facing else -1.0,
+        float(p.on_ground),
+        float(p.off_stage),
+        float(p.invulnerable),
+        min(p.hitlag_left, 30) / 10.0,
+        min(p.hitstun_frames_left, 120) / 30.0,
+        p.jumps_left / 2.0,
+        p.shield_strength / 60.0,
+        p.speed_air_x_self / 3.0,
+        p.speed_ground_x_self / 3.0,
+        p.speed_y_self / 3.0,
+        np.clip(p.speed_x_attack / 5.0, -5, 5),
+        np.clip(p.speed_y_attack / 5.0, -5, 5),
+        min(p.action_frame, 120) / 60.0,
+        (edge - abs(p.position.x)) / 100.0,
+        float(p.iasa) if isinstance(p.iasa, (bool, int, float)) else 0.0,
+    )
+    character = int(getattr(p.character, "value", p.character))
+    if 0 <= character < NUM_CHARACTERS:
+        f[PLAYER_FEATURES + character] = 1.0
+    f[PLAYER_FEATURES + NUM_CHARACTERS + _action_id(p)] = 1.0
+    return f
+
+
+def observation(gs, me, op, edge: float) -> np.ndarray:
+    """What a model sees: `me` (the player it controls) first, then `op`, then 4 globals."""
+    dx = (op.position.x - me.position.x) / 100.0
+    dy = (op.position.y - me.position.y) / 100.0
+    glob = np.array([dx, dy, np.hypot(dx, dy), min(gs.frame, 28800) / 28800.0], dtype=np.float32)
+    obs = np.concatenate([player_features(me, edge), player_features(op, edge), glob])
+    return np.clip(obs, -10.0, 10.0).astype(np.float32)
 
 
 class SmashEnv(gym.Env):
@@ -89,8 +149,20 @@ class SmashEnv(gym.Env):
     they pick their character and press Start, and Dolphin no longer waits for the
     agent on every frame, so the game runs in real time and can be paused.
 
-    Reward per step (before scaling):
+    two_player=True puts a second agent on port 2 instead of the CPU (see selfplay.py):
+    `opponent` is then its character (or RANDOM), step() takes one action per port, and
+    observations, rewards and infos come back per port (obs and rewards stacked along a
+    leading axis of size 2, infos as {"p1": ..., "p2": ...}).
+
+    With two_player and cpu_opponent=True, port 2 is the Melee CPU (cpu_level) instead and
+    its action is ignored, so CPU games fit in the same per-port interface. character="RANDOM"
+    gives port 1 a new random character every game.
+
+    reward="v1" (M1, MK0-MK2), per step and from each player's point of view:
         damage_scale * (damage dealt - damage taken) + (stocks taken - stocks lost)
+        - whiff_penalty * (A attacks that ended without hitting the opponent or their shield)
+    reward="v2" (MK3 / MK4): knockouts worth 5, combo rewards, anti-spam and anti-camping
+    penalties and defence rewards, see smash_rl/rewards.py.
     """
 
     metadata = {"render_modes": []}
@@ -103,6 +175,10 @@ class SmashEnv(gym.Env):
         cpu_level: int = 1,
         frame_skip: int = 3,
         damage_scale: float = 0.01,
+        whiff_penalty: float = 0.0,
+        reward: str = "v1",
+        two_player: bool = False,
+        cpu_opponent: bool = False,
         port: int = 51441,
         headless: bool = False,
         dolphin_path: str = None,
@@ -111,19 +187,27 @@ class SmashEnv(gym.Env):
         gfx_backend: str = "OGL",
         emulation_speed: float = 0.0,
         max_menu_frames: int = 6000,
+        hang_timeout: float = 30.0,
     ):
         super().__init__()
-        self.character = melee.Character[character.upper()]
+        self.random_character = character.upper() == "RANDOM"
+        self.character = melee.Character.FOX if self.random_character else melee.Character[character.upper()]
         self.random_opponent = opponent.upper() == "RANDOM"
         self.human_opponent = opponent.upper() == "HUMAN"
         self.opponent = None if self.random_opponent or self.human_opponent else melee.Character[opponent.upper()]
         # Instant Match restarts a finished game without the menus. It is off with a random
         # opponent or a person (character select every game) and headless (it crashes the ExiAI build).
-        self.instant_restart = not (self.random_opponent or self.human_opponent or headless)
+        self.instant_restart = not (self.random_character or self.random_opponent or self.human_opponent or headless)
         self.stage = melee.Stage[stage.upper()]
         self.cpu_level = int(cpu_level)
         self.frame_skip = frame_skip
         self.damage_scale = damage_scale
+        self.whiff_penalty = whiff_penalty
+        if reward not in ("v1", "v2"):
+            raise ValueError(f"unknown reward {reward!r}")
+        self.reward_version = reward
+        self.two_player = two_player
+        self.cpu_opponent = cpu_opponent  # with two_player: port 2 is the CPU, not a second agent
         self.port = port
         self.headless = headless
         self.dolphin_path = dolphin_path or (HEADLESS_DOLPHIN if headless else DEFAULT_DOLPHIN)
@@ -132,6 +216,7 @@ class SmashEnv(gym.Env):
         self.gfx_backend = gfx_backend
         self.emulation_speed = emulation_speed
         self.max_menu_frames = max_menu_frames
+        self.hang_timeout = hang_timeout  # seconds without game states before Dolphin counts as frozen
         for path in (self.dolphin_path, self.iso_path):
             if not os.path.isfile(path):
                 raise FileNotFoundError(f"{path} not found - see setup.sh")
@@ -158,6 +243,11 @@ class SmashEnv(gym.Env):
             # Blocking input makes Dolphin wait for the agent every frame, which would freeze
             # a pause by a person (no game states arrive to answer with while paused).
             blocking_input=not self.human_opponent,
+            # Wait at most hang_timeout for each game state, so a frozen Dolphin is noticed and
+            # restarted instead of stalling training forever. A person's pause sends nothing for
+            # as long as it lasts, so human games wait without a limit.
+            polling_mode=not self.human_opponent,
+            polling_timeout=0 if self.human_opponent else self.hang_timeout,
             fullscreen=False,
             disable_audio=not self.human_opponent,
             save_replays=False,
@@ -197,13 +287,17 @@ class SmashEnv(gym.Env):
             self.cpu_pad = melee.Controller(console=console, port=2, type=melee.ControllerType.STANDARD)
         console.run(iso_path=self.iso_path)
         self.console = console
-        for _ in range(120):
-            if console.connect():
-                break
-            time.sleep(0.5)
-        else:
+        pid_dir = os.environ.get(PID_DIR_ENV)
+        if pid_dir:  # lets the vectorized env kill this Dolphin even if this worker process dies
+            with open(os.path.join(pid_dir, f"{self.port}.pid"), "w") as f:
+                f.write(str(console._process.pid))
+        # libmelee's connect() waits for Dolphin with no time limit; same steps, bounded.
+        stream = console._slippstream
+        stream._worker.start()
+        if not stream._buffer.poll(timeout=60) or not stream._buffer.recv():
             self._stop_dolphin()
             raise RuntimeError(f"could not connect to dolphin on port {self.port}")
+        stream.running = True
         self.pad.connect()
         if self.cpu_pad is not None:
             self.cpu_pad.connect()
@@ -211,19 +305,42 @@ class SmashEnv(gym.Env):
         self._game_over = False
 
     def _stop_dolphin(self):
-        if self.console is not None:
+        """Kill Dolphin and libmelee's connection process; never waits forever, even on a frozen Dolphin."""
+        if self.console is None:
+            return
+        console, self.console = self.console, None
+        proc = getattr(console, "_process", None)
+        if proc is not None and proc.poll() is None:
+            proc.kill()
             try:
-                self.console.stop()
+                proc.wait(timeout=10)
             except Exception:
                 pass
-            self.console = None
+        stream = getattr(console, "_slippstream", None)
+        worker = getattr(stream, "_worker", None)
+        if worker is not None and worker.pid is not None:  # libmelee's shutdown() would join it with no timeout
+            stream._shutdown.set()
+            worker.join(timeout=5)
+            if worker.is_alive():
+                worker.kill()
+                worker.join(timeout=5)
+            stream._worker = None
+        try:
+            console.stop()
+        except Exception:
+            pass
 
     def _next_state(self):
-        for _ in range(1000):
-            gs = self.console.step()
-            if gs is not None:
-                return gs
-        raise RuntimeError("dolphin stopped sending game states")
+        if self.human_opponent:
+            for _ in range(1000):
+                gs = self.console.step()
+                if gs is not None:
+                    return gs
+            raise RuntimeError("dolphin stopped sending game states")
+        gs = self.console.step()
+        if gs is None:
+            raise RuntimeError(f"no game state for {self.hang_timeout:.0f} s: Dolphin froze")
+        return gs
 
     def _alive(self) -> bool:
         proc = getattr(self.console, "_process", None)
@@ -233,9 +350,9 @@ class SmashEnv(gym.Env):
     def set_cpu_level(self, level: int):
         """Takes effect from the next game.
 
-        Games restart without visiting the menus, so a new level restarts Dolphin
-        to go through character select again (not needed when instant restarts are
-        off, since every game then goes through character select).
+        A new level restarts Dolphin: with instant restarts the menus are never visited, and
+        changing the level of a CPU already set up on the character select screen gets the
+        menu helper stuck.
         """
         self.cpu_level = int(np.clip(level, 1, 9))
 
@@ -269,9 +386,14 @@ class SmashEnv(gym.Env):
             cpu_ready = False
             if self.cpu_pad is not None and gs.menu_state == melee.Menu.CHARACTER_SELECT:
                 p2 = gs.players.get(2)
-                cpu_ready = p2 is not None and p2.cpu_level == self.cpu_level and p2.character == self.opponent
+                if self.two_player and not self.cpu_opponent:  # a second agent plays port 2 as a human slot
+                    cpu_ready = p2 is not None and p2.character == self.opponent and p2.coin_down
+                else:
+                    cpu_ready = p2 is not None and p2.cpu_level == self.cpu_level and p2.character == self.opponent
                 self.cpu_menu.menu_helper_simple(gs, self.cpu_pad, self.opponent, self.stage,
-                                                 cpu_level=self.cpu_level, autostart=False)
+                                                 cpu_level=0 if self.two_player and not self.cpu_opponent
+                                                 else self.cpu_level,
+                                                 autostart=False)
             elif self.cpu_pad is not None:
                 self.cpu_pad.release_all()
             # Only start once the CPU slot is set up (a person on port 2 presses Start
@@ -285,9 +407,12 @@ class SmashEnv(gym.Env):
         super().reset(seed=seed)
         if self.random_opponent:
             self.opponent = RANDOM_OPPONENTS[self.np_random.integers(len(RANDOM_OPPONENTS))]
-        for attempt in range(3):
+        if self.random_character:
+            self.character = RANDOM_OPPONENTS[self.np_random.integers(len(RANDOM_OPPONENTS))]
+        for attempt in range(5):
             try:
-                if self._alive() and self._running_level != self.cpu_level and self.instant_restart:
+                cpu_in_game = not self.human_opponent and (not self.two_player or self.cpu_opponent)
+                if self._alive() and self._running_level != self.cpu_level and cpu_in_game:
                     self._stop_dolphin()
                 if not self._alive():
                     self._start_dolphin()
@@ -296,120 +421,154 @@ class SmashEnv(gym.Env):
             except Exception as e:  # dolphin crashed or hung in menus: restart it
                 if self.human_opponent:
                     raise  # most likely the person closed the Dolphin window
-                print(f"[port {self.port}] restarting dolphin after: {e}")
+                print(f"[port {self.port}] restarting dolphin after: {e}", flush=True)
                 self._stop_dolphin()
+                time.sleep(2)
         else:
-            raise RuntimeError("could not start a game after 3 attempts")
+            raise RuntimeError("could not start a game after 5 attempts")
         if self.human_opponent:
             self.opponent = gs.players[2].character
         self._gs = gs
         self._game_over = False
         self._prev = self._snapshot(gs)
-        self._stats = {"damage_dealt": 0.0, "damage_taken": 0.0, "kills": 0, "deaths": 0}
+        self._stats = {port: {"damage_dealt": 0.0, "damage_taken": 0.0, "kills": 0, "deaths": 0,
+                              "attacks": 0, "whiffs": 0} for port in (1, 2)}
+        self._attack = {1: None, 2: None}  # [action, hit so far] of the A attack each port is doing
+        if self.reward_version == "v2":
+            self._rewarder = RewardTracker(gs, RewardWeights())
+            self._stats = self._rewarder.stats
+        if self.two_player:
+            return self._both_obs(gs), self._both_info(gs, done=False)
         return self._obs(gs), self._info(gs, done=False)
 
     @staticmethod
     def _snapshot(gs):
-        p1, p2 = gs.players[1], gs.players[2]
-        return (float(p1.percent), int(p1.stock), float(p2.percent), int(p2.stock))
+        """({port: percent}, {port: stocks})"""
+        return ({p: float(gs.players[p].percent) for p in (1, 2)}, {p: int(gs.players[p].stock) for p in (1, 2)})
 
-    def step(self, action):
+    @staticmethod
+    def _press(pad, action):
+        """Set `pad` to one of ACTIONS; returns the button pressed (or None)."""
         stick, button = ACTIONS[int(action)]
-        pad = self.pad
         pad.release_all()
         pad.tilt_analog(B.BUTTON_MAIN, *stick)
         if button is not None:
             pad.press_button(button)
+        return button
 
-        reward = 0.0
-        terminated = False
+    def step(self, action):
+        if self.two_player and not self.cpu_opponent:
+            pads = [(self.pad, action[0]), (self.cpu_pad, action[1])]
+        else:
+            pads = [(self.pad, action[0] if self.two_player else action)]
+        pressed = [(pad, self._press(pad, a)) for pad, a in pads]
+        if self.reward_version == "v2":
+            for port, (_, a) in enumerate(pads, start=1):
+                self._rewarder.set_input(port, *ACTIONS[int(a)])
+
+        reward = np.zeros(2, dtype=np.float32)
+        terminated = crashed = False
         gs = self._gs
-        for i in range(self.frame_skip):
-            if i == self.frame_skip - 1 and button in TAP_BUTTONS and self.frame_skip > 1:
-                pad.release_button(button)
-            gs = self._next_state()
-            # Leaving the game, or the frame counter going back (a timed-out game was instantly restarted).
-            if gs.menu_state not in IN_GAME or gs.frame < self._gs.frame:
-                terminated = True
-                break
-            reward += self._frame_reward(gs)
-            p1, p2 = gs.players.get(1), gs.players.get(2)
-            if p1 is None or p2 is None or p1.stock == 0 or p2.stock == 0:
-                terminated = True
-                break
-        pad.release_all()
+        try:
+            for i in range(self.frame_skip):
+                if i == self.frame_skip - 1 and self.frame_skip > 1:
+                    for pad, button in pressed:
+                        if button in TAP_BUTTONS:
+                            pad.release_button(button)
+                gs = self._next_state()
+                # Leaving the game, or the frame counter going back (a timed-out game was instantly restarted).
+                if gs.menu_state not in IN_GAME or gs.frame < self._gs.frame:
+                    terminated = True
+                    break
+                reward += self._frame_reward(gs)
+                p1, p2 = gs.players.get(1), gs.players.get(2)
+                if p1 is None or p2 is None or p1.stock == 0 or p2.stock == 0:
+                    terminated = True
+                    break
+            for pad, _ in pressed:
+                pad.release_all()
+        except Exception as e:  # Dolphin died or froze: end this game here, reset() starts a new Dolphin
+            if self.human_opponent:
+                raise
+            print(f"[port {self.port}] dolphin failed mid-game ({type(e).__name__}: {e}); restarting it", flush=True)
+            self._stop_dolphin()
+            gs, terminated, crashed = self._gs, True, True
 
         if gs.menu_state in IN_GAME and 1 in gs.players and 2 in gs.players and not (terminated and gs.frame < self._gs.frame):
             self._gs = gs
         self._game_over = terminated
-        obs = self._obs(self._gs)
-        return obs, reward, terminated, False, self._info(self._gs, done=terminated)
+        if self.two_player:
+            info = self._both_info(self._gs, done=terminated)
+            for side in info.values():
+                side["crashed"] = crashed
+            return self._both_obs(self._gs), reward, terminated, False, info
+        info = self._info(self._gs, done=terminated)
+        info["crashed"] = crashed
+        return self._obs(self._gs), float(reward[0]), terminated, False, info
 
-    def _frame_reward(self, gs) -> float:
-        my_pct, my_stock, op_pct, op_stock = self._snapshot(gs)
-        prev_my_pct, prev_my_stock, prev_op_pct, prev_op_stock = self._prev
-        self._prev = (my_pct, my_stock, op_pct, op_stock)
-
-        deaths = max(0, prev_my_stock - my_stock)
-        kills = max(0, prev_op_stock - op_stock)
+    def _frame_reward(self, gs) -> np.ndarray:
+        """This frame's reward for port 1 and port 2; also updates their stats."""
+        if self.reward_version == "v2":
+            return self._rewarder.frame(gs)
+        pct, stock = self._snapshot(gs)
+        prev_pct, prev_stock = self._prev
+        self._prev = (pct, stock)
+        deaths = {p: max(0, prev_stock[p] - stock[p]) for p in (1, 2)}
         # Percent resets to 0 on death, so only count increases within a stock.
-        taken = max(0.0, my_pct - prev_my_pct) if not deaths else 0.0
-        dealt = max(0.0, op_pct - prev_op_pct) if not kills else 0.0
-        self._stats["damage_dealt"] += dealt
-        self._stats["damage_taken"] += taken
-        self._stats["kills"] += kills
-        self._stats["deaths"] += deaths
-        return self.damage_scale * (dealt - taken) + (kills - deaths)
+        taken = {p: 0.0 if deaths[p] else max(0.0, pct[p] - prev_pct[p]) for p in (1, 2)}
+
+        rewards = np.zeros(2, dtype=np.float32)
+        for p in (1, 2):
+            o = OTHER_PORT[p]
+            hit = taken[o] > 0 or deaths[o] > 0 or gs.players[o].action == melee.Action.SHIELD_STUN
+            whiffs = self._track_attack(gs, p, hit)
+            stats = self._stats[p]
+            stats["damage_dealt"] += taken[o]
+            stats["damage_taken"] += taken[p]
+            stats["kills"] += deaths[o]
+            stats["deaths"] += deaths[p]
+            rewards[p - 1] = (self.damage_scale * (taken[o] - taken[p]) + deaths[o] - deaths[p]
+                              - self.whiff_penalty * whiffs)
+        return rewards
+
+    def _track_attack(self, gs, port: int, hit: bool) -> int:
+        """Follow the A attack `port` is doing; returns 1 when one ends without having hit anything."""
+        action = getattr(gs.players[port].action, "value", -1)
+        attack = self._attack[port]
+        whiffed = 0
+        if attack is not None and attack[0] != action:  # it ended, or turned into the next attack (jab 1 -> 2)
+            whiffed = int(not attack[1])
+            self._stats[port]["whiffs"] += whiffed
+            attack = None
+        if action in ATTACK_ACTIONS:
+            if attack is None:
+                attack = [action, False]
+                self._stats[port]["attacks"] += 1
+            attack[1] = attack[1] or hit
+        self._attack[port] = attack
+        return whiffed
 
     # ------------------------------------------------------------ observation
-    def _player_features(self, p) -> np.ndarray:
-        """20 continuous features, then a character one-hot, then an action-state one-hot."""
-        f = np.zeros(PLAYER_SIZE, dtype=np.float32)
-        f[:PLAYER_FEATURES] = (
-            p.position.x / 100.0,
-            p.position.y / 100.0,
-            p.percent / 100.0,
-            p.stock / 4.0,
-            1.0 if p.facing else -1.0,
-            float(p.on_ground),
-            float(p.off_stage),
-            float(p.invulnerable),
-            min(p.hitlag_left, 30) / 10.0,
-            min(p.hitstun_frames_left, 120) / 30.0,
-            p.jumps_left / 2.0,
-            p.shield_strength / 60.0,
-            p.speed_air_x_self / 3.0,
-            p.speed_ground_x_self / 3.0,
-            p.speed_y_self / 3.0,
-            np.clip(p.speed_x_attack / 5.0, -5, 5),
-            np.clip(p.speed_y_attack / 5.0, -5, 5),
-            min(p.action_frame, 120) / 60.0,
-            (self.edge - abs(p.position.x)) / 100.0,
-            float(p.iasa) if isinstance(p.iasa, (bool, int, float)) else 0.0,
-        )
-        character = int(getattr(p.character, "value", p.character))
-        if 0 <= character < NUM_CHARACTERS:
-            f[PLAYER_FEATURES + character] = 1.0
-        f[PLAYER_FEATURES + NUM_CHARACTERS + _action_id(p)] = 1.0
-        return f
+    def _obs(self, gs, port: int = 1) -> np.ndarray:
+        """Observation from `port`'s point of view: its own features first."""
+        return observation(gs, gs.players[port], gs.players[OTHER_PORT[port]], self.edge)
 
-    def _obs(self, gs) -> np.ndarray:
-        me, op = gs.players[1], gs.players[2]
-        dx = (op.position.x - me.position.x) / 100.0
-        dy = (op.position.y - me.position.y) / 100.0
-        glob = np.array([dx, dy, np.hypot(dx, dy), min(gs.frame, 28800) / 28800.0], dtype=np.float32)
-        obs = np.concatenate([self._player_features(me), self._player_features(op), glob])
-        return np.clip(obs, -10.0, 10.0).astype(np.float32)
-
-    def _info(self, gs, done: bool) -> dict:
-        info = dict(self._stats)
+    def _info(self, gs, done: bool, port: int = 1) -> dict:
+        me, op = gs.players[port], gs.players[OTHER_PORT[port]]
+        info = dict(self._stats[port])
         info["cpu_level"] = self.cpu_level
-        info["opponent"] = self.opponent.name
+        info["character"] = me.character.name
+        info["opponent"] = op.character.name
         if done:
-            me, op = gs.players[1], gs.players[2]
             info["won"] = float(op.stock < me.stock or (op.stock == me.stock and op.percent > me.percent))
             info["stock_diff"] = int(me.stock) - int(op.stock)
         return info
+
+    def _both_obs(self, gs) -> np.ndarray:
+        return np.stack([self._obs(gs, 1), self._obs(gs, 2)])
+
+    def _both_info(self, gs, done: bool) -> dict:
+        return {"p1": self._info(gs, done, 1), "p2": self._info(gs, done, 2)}
 
     def close(self):
         self._stop_dolphin()
@@ -442,6 +601,8 @@ class NonDaemonSubprocVecEnv(SubprocVecEnv):
         self.waiting = False
         self.closed = False
         n_envs = len(env_fns)
+        self.pid_dir = tempfile.mkdtemp(prefix="smash_dolphins_")
+        os.environ[PID_DIR_ENV] = self.pid_dir  # inherited by the workers
         ctx = mp.get_context(start_method)
         self.remotes, self.work_remotes = zip(*[ctx.Pipe() for _ in range(n_envs)])
         self.processes = []
@@ -454,6 +615,42 @@ class NonDaemonSubprocVecEnv(SubprocVecEnv):
         observation_space, action_space = self.remotes[0].recv()
         super(SubprocVecEnv, self).__init__(n_envs, observation_space, action_space)
 
+    def close(self):
+        """Ask every worker to close its Dolphin, then make sure each process is gone.
+
+        SB3's close() waits forever for workers that died or are stuck; this never does.
+        """
+        if self.closed:
+            return
+        for remote in self.remotes:
+            try:
+                remote.send(("close", None))
+            except (BrokenPipeError, EOFError, OSError):
+                pass
+        for process in self.processes:
+            process.join(timeout=45)  # a worker blocked on a frozen Dolphin notices within hang_timeout
+            if process.is_alive():
+                process.terminate()  # SIGTERM: the worker still closes its Dolphin on the way out
+                process.join(timeout=10)
+            if process.is_alive():
+                process.kill()
+                process.join(timeout=5)
+        for remote in self.remotes:
+            remote.close()
+        # Dolphins whose worker died without closing them (killed, out of memory, ...).
+        for name in os.listdir(self.pid_dir):
+            try:
+                with open(os.path.join(self.pid_dir, name)) as f:
+                    pid = int(f.read())
+                with open(f"/proc/{pid}/cmdline", "rb") as f:
+                    cmdline = f.read()
+                if b"Slippi" in cmdline or b"AppRun" in cmdline:  # still that Dolphin, not a reused pid
+                    os.kill(pid, signal.SIGKILL)
+            except (OSError, ValueError):
+                pass
+        shutil.rmtree(self.pid_dir, ignore_errors=True)
+        self.closed = True
+
 
 class SmashMonitor(Monitor):
     """Monitor that forwards `set_cpu_level` so VecEnv.env_method can reach the env."""
@@ -462,7 +659,8 @@ class SmashMonitor(Monitor):
         self.env.unwrapped.set_cpu_level(level)
 
 
-INFO_KEYWORDS = ("won", "stock_diff", "damage_dealt", "damage_taken", "kills", "deaths", "cpu_level")
+INFO_KEYWORDS = ("won", "stock_diff", "damage_dealt", "damage_taken", "kills", "deaths", "attacks", "whiffs",
+                 "cpu_level")
 
 
 def make_env(rank: int = 0, base_port: int = 51441, **env_kwargs):

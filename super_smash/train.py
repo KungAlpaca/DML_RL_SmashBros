@@ -6,6 +6,8 @@ Usage:
     python train.py --opponent RANDOM                # a different random CPU character every game
     python train.py --cpu-level 9 --no-curriculum    # always fight a level 9 CPU
     python train.py --gui                            # show a Dolphin window per env (slower)
+    python train.py --whiff-penalty 0.01 --stop-win-rate 0.9   # punish attacks that hit nothing; stop once
+                                                     # it wins 90% of the last 50 games vs CPU level 9
     python train.py --resume runs/<run>/checkpoints/ppo_smash_update0100_614400steps.zip --cpu-level 4
 
 Monitor with:
@@ -27,9 +29,15 @@ from smash_rl.env import CAN_RUN_HEADLESS, make_vec_env
 
 
 class SmashStatsCallback(BaseCallback):
-    """Logs per-game stats to TensorBoard and raises the CPU level when the agent wins often enough."""
+    """Logs per-game stats to TensorBoard and raises the CPU level when the agent wins often enough.
 
-    def __init__(self, curriculum: bool, start_level: int, window: int, promote_at: float, max_level: int = 9):
+    With stop_win_rate set, training ends once the agent wins that often over the
+    last stop_window games against the top level (and, with stop_whiff_rate, misses
+    with at most that fraction of its A attacks in those games).
+    """
+
+    def __init__(self, curriculum: bool, start_level: int, window: int, promote_at: float, max_level: int = 9,
+                 stop_win_rate: float = None, stop_window: int = 50, stop_whiff_rate: float = None):
         super().__init__()
         self.curriculum = curriculum
         self.level = start_level
@@ -37,6 +45,9 @@ class SmashStatsCallback(BaseCallback):
         self.promote_at = promote_at
         self.max_level = max_level
         self.recent = deque(maxlen=window)
+        self.stop_win_rate = stop_win_rate
+        self.stop_whiff_rate = stop_whiff_rate
+        self.at_max_level = deque(maxlen=stop_window)  # (won, whiffs, attacks) per game
         self.games = 0
 
     def _on_training_start(self) -> None:
@@ -45,16 +56,19 @@ class SmashStatsCallback(BaseCallback):
 
     def _on_step(self) -> bool:
         for info in self.locals["infos"]:
-            if info.get("episode") is None:
+            if info.get("episode") is None or info.get("crashed"):  # crashed: Dolphin froze or died mid-game
                 continue
             self.games += 1
             won = float(info.get("won", 0.0))
-            for key in ("won", "stock_diff", "damage_dealt", "damage_taken", "kills", "deaths"):
+            for key in ("won", "stock_diff", "damage_dealt", "damage_taken", "kills", "deaths", "attacks"):
                 self.logger.record_mean(f"smash/{key}", float(info.get(key, 0.0)))
+            self.logger.record_mean("smash/whiff_rate", info.get("whiffs", 0) / max(info.get("attacks", 0), 1))
             self.logger.record("smash/games", self.games)
             # Only games played at the current level count towards promotion.
             if int(info.get("cpu_level", self.level)) == self.level:
                 self.recent.append(won)
+            if int(info.get("cpu_level", 0)) == self.max_level:
+                self.at_max_level.append((won, info.get("whiffs", 0), info.get("attacks", 0)))
 
         if (self.curriculum and self.level < self.max_level and len(self.recent) == self.window
                 and np.mean(self.recent) >= self.promote_at):
@@ -63,6 +77,13 @@ class SmashStatsCallback(BaseCallback):
             self.training_env.env_method("set_cpu_level", self.level)
             print(f"\n>>> win rate reached {self.promote_at:.0%}: CPU level is now {self.level}\n")
         self.logger.record("smash/cpu_level", self.level)
+        if self.stop_win_rate is not None and len(self.at_max_level) == self.at_max_level.maxlen:
+            won, whiffs, attacks = np.sum(self.at_max_level, axis=0)
+            win_rate, whiff_rate = won / len(self.at_max_level), whiffs / max(attacks, 1)
+            if win_rate >= self.stop_win_rate and (self.stop_whiff_rate is None or whiff_rate <= self.stop_whiff_rate):
+                print(f"\n>>> won {win_rate:.0%} of the last {len(self.at_max_level)} games against CPU level "
+                      f"{self.max_level}, {whiff_rate:.0%} of attacks hit nothing: stopping\n")
+                return False
         return True
 
 
@@ -107,6 +128,13 @@ def parse_args():
     p.add_argument("--promote-window", type=int, default=20, help="games used to measure the win rate")
     p.add_argument("--promote-at", type=float, default=0.7, help="win rate needed to raise the CPU level")
     p.add_argument("--frame-skip", type=int, default=3, help="game frames per agent action (60 frames = 1s)")
+    p.add_argument("--whiff-penalty", type=float, default=0.0,
+                   help="reward subtracted for each A attack that ends without hitting the opponent or their shield")
+    p.add_argument("--stop-win-rate", type=float, default=None,
+                   help="stop training once this win rate is reached against CPU level 9 (over --stop-window games)")
+    p.add_argument("--stop-window", type=int, default=50, help="games used for --stop-win-rate")
+    p.add_argument("--stop-whiff-rate", type=float, default=None,
+                   help="with --stop-win-rate, also require at most this fraction of A attacks hitting nothing")
     p.add_argument("--timesteps", type=int, default=20_000_000)
     p.add_argument("--n-envs", type=int, default=6, help="parallel games (one Dolphin each)")
     p.add_argument("--gui", action="store_true",
@@ -150,7 +178,7 @@ def main():
     env = make_vec_env(
         n_envs=args.n_envs, base_port=args.base_port,
         character=args.character, opponent=args.opponent, stage=args.stage,
-        cpu_level=args.cpu_level, frame_skip=args.frame_skip, headless=headless,
+        cpu_level=args.cpu_level, frame_skip=args.frame_skip, whiff_penalty=args.whiff_penalty, headless=headless,
     )
 
     try:
@@ -180,7 +208,9 @@ def main():
 
         callbacks = CallbackList([
             UpdateCheckpointCallback(args.save_every, os.path.join(run_dir, "checkpoints")),
-            SmashStatsCallback(not args.no_curriculum, args.cpu_level, args.promote_window, args.promote_at),
+            SmashStatsCallback(not args.no_curriculum, args.cpu_level, args.promote_window, args.promote_at,
+                               stop_win_rate=args.stop_win_rate, stop_window=args.stop_window,
+                               stop_whiff_rate=args.stop_whiff_rate),
         ])
 
         try:

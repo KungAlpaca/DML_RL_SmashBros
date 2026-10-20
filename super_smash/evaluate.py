@@ -57,7 +57,7 @@ def play_games(model, env, games: int, deterministic: bool, verbose: bool = True
             print(f"game {game} vs {info['opponent']}: {'WON ' if info.get('won') else 'lost'} | "
                   f"stock diff {info.get('stock_diff', 0):+d} | "
                   f"kills {info['kills']} deaths {info['deaths']} | damage dealt {info['damage_dealt']:.0f}% "
-                  f"taken {info['damage_taken']:.0f}% | {steps} steps")
+                  f"taken {info['damage_taken']:.0f}% | whiffed attacks {info['whiffs']}/{info['attacks']} | {steps} steps")
     return results
 
 
@@ -68,6 +68,7 @@ def summarize(results):
         "mean_stock_diff": float(np.mean([r.get("stock_diff", 0) for r in results])),
         "mean_kills": float(np.mean([r["kills"] for r in results])),
         "mean_deaths": float(np.mean([r["deaths"] for r in results])),
+        "whiff_rate": sum(r["whiffs"] for r in results) / max(sum(r["attacks"] for r in results), 1),
     }
 
 
@@ -109,7 +110,7 @@ def main():
             model = PPO.load(args.model, device="cpu")
             s = summarize(play_games(model, env, args.games, not args.stochastic))
             print(f"\nwin rate {s['win_rate']:.0%} over {s['games']} games vs CPU level {args.cpu_level} | "
-                  f"mean stock diff {s['mean_stock_diff']:+.2f}")
+                  f"mean stock diff {s['mean_stock_diff']:+.2f} | {s['whiff_rate']:.0%} of attacks hit nothing")
     finally:
         env.close()
 

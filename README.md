@@ -6,7 +6,7 @@ game's hardest CPU and that you can play against yourself.
 
 | Project | Game | What the agent sees | Status |
 |---|---|---|---|
-| [`super_smash/`](super_smash/README.md) | Super Smash Bros. Melee (GameCube, via Slippi Dolphin + libmelee) | 898 numbers read from game memory | Trained model included: wins 20/20 against the level 9 CPU |
+| [`super_smash/`](super_smash/README.md) | Super Smash Bros. Melee (GameCube, via Slippi Dolphin + libmelee) | 898 numbers read from game memory | Model M1 included: wins 20/20 against the level 9 CPU. MK0 / MK1 / MK2 pipeline (self-play, attack-spam penalty) ready to train |
 | [`super_mario/`](super_mario/README.md) | Super Mario Bros. World 1-1 (NES, via gym-super-mario-bros) | 4 stacked 84x84 grayscale frames | Training code only; an early 1.6M-step run got about halfway through the level, without clearing it |
 
 Each project is self-contained: its own `setup.sh`, `requirements.txt`, Python
@@ -19,13 +19,13 @@ cd super_smash
 ./setup.sh                                          # Python env + emulator downloads
 cp /path/to/your.iso "Super Smash Bros Melee v1.02.iso"   # your own NTSC v1.02 ISO
 source .venv/bin/activate
-python play.py models/fox_vs_fox_cpu9.zip           # Xbox controller; --input keyboard otherwise
+python play.py models/M1.zip           # Xbox controller; --input keyboard otherwise
 ```
 
 Watch it beat the CPU instead:
 
 ```bash
-python evaluate.py models/fox_vs_fox_cpu9.zip --cpu-level 9 --games 3
+python evaluate.py models/M1.zip --cpu-level 9 --games 3
 ```
 
 Train your own (headless; the shipped model reached CPU level 9 in 38 minutes with 12 games on 8 cores):
@@ -45,8 +45,8 @@ options and how the agent works.
 ├── AGENTS.md            orientation guide for AI coding assistants (CLAUDE.md points to it)
 ├── super_smash/         Melee agent
 │   ├── smash_rl/        env.py (Gymnasium env around Dolphin), xbox_pad.py (controller input for play.py)
-│   ├── models/          trained model(s) shipped with the repo
-│   ├── train.py  evaluate.py  play.py  test_env.py  setup.sh  requirements.txt
+│   ├── models/          trained models shipped with the repo (M1)
+│   ├── train.py  selfplay.py  evaluate.py  versus.py  play.py  test_env.py  setup.sh  requirements.txt
 │   └── (ignored) .venv/  dolphin/  runs/  *.iso
 └── super_mario/         Mario agent
     ├── mario_rl/        env.py (Gymnasium adapter + preprocessing)
