@@ -29,7 +29,7 @@ import os
 import signal
 import time
 from collections import defaultdict, deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import torch
@@ -56,10 +56,12 @@ class Lineup:
     lrs: dict  # learner -> default learning rate
     cpu_start: int  # default first level of the curriculum games
     run_name: str
+    # Other teams' bots that only play on port 2: name -> (kind, path) for smash_rl.external_bots.
+    bots: dict = field(default_factory=dict)
 
     @property
     def models(self):
-        return tuple(m for m in self.characters if m != "CPU")
+        return tuple(m for m in self.characters if m != "CPU" and m not in self.bots)
 
     @property
     def learners(self):
@@ -94,9 +96,10 @@ def make_env(lu, game, layout, cpu_level, base_port, **env_kwargs):
     p1, p2 = layout[game]
 
     def _init():
+        bot = lu.bots.get(p2)
         return SmashEnv(port=base_port + game, two_player=True, character=lu.characters[p1],
-                        opponent=lu.characters[p2], cpu_opponent=p2 == "CPU", cpu_level=cpu_level, reward="v2",
-                        **env_kwargs)
+                        opponent="FOX" if bot else lu.characters[p2], cpu_opponent=p2 == "CPU",
+                        cpu_level=cpu_level, reward="v2", opponent_bot=bot, **env_kwargs)
 
     return _init
 
@@ -280,7 +283,7 @@ def main(lu=MK5678):
                 for game, info in games:
                     for side, who in enumerate(layout[game]):
                         mine = info[("p1", "p2")[side]]
-                        if who == "CPU" or mine.get("crashed"):  # crashed: a Dolphin froze or died
+                        if who not in models or mine.get("crashed"):  # CPU or bot; crashed: a Dolphin froze or died
                             continue
                         opponent = layout[game][1 - side]
                         if opponent == "CPU":
@@ -330,6 +333,8 @@ def main(lu=MK5678):
     except KeyboardInterrupt:
         print(f"\nstopped at update {update} ({(time.time() - start) / 3600:.2f} h) - saving current models")
     finally:
+        for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            signal.signal(sig, signal.SIG_IGN)  # a second Ctrl+C or a closed terminal must not cut the save short
         for name, model in models.items():
             model.save(os.path.join(run_dir, name))
         print(f"saved {', '.join(f'{run_dir}/{name}.zip' for name in models)} | CPU level {levels_text(cpu_level)}",

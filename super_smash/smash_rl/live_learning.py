@@ -14,7 +14,7 @@ from stable_baselines3.common.utils import obs_as_tensor
 
 
 def live_path(model_path: str) -> str:
-    """Where a fine-tuned copy goes: models/MK3.zip -> models/MK3_live.zip (a _live model keeps its name)."""
+    """Where a fine-tuned copy goes: .../MK3.zip -> .../MK3_live.zip (a _live model keeps its name)."""
     stem = model_path[:-4] if model_path.endswith(".zip") else model_path
     return f"{stem}.zip" if stem.endswith("_live") else f"{stem}_live.zip"
 

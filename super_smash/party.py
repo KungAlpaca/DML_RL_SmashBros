@@ -1,11 +1,13 @@
 """Free-for-all on Final Destination: you against up to two trained agents, plus a Melee CPU if you want.
 
 Usage:
-    python party.py                                        # MK1 + MK2 vs you, Xbox controller
+    python party.py                                        # MK5 (Fox) + MK6 (random) vs you, Xbox controller
     python party.py --input keyboard
-    python party.py --p1 models/M1.zip --p2 models/MK1.zip --p2-character FOX
+    python party.py --p1 models/alejandro/MK9.zip --p2 models/all_models/fox/MK3.zip --p2-character FOX
     python party.py --p2 none                              # only one agent
-    python party.py --p1 models/MK3.zip --p2 models/MK4.zip --learn   # both learn from every game
+    python party.py --p1 models/all_models/fox/MK3.zip --p2 models/all_models/random/MK4.zip --learn   # both learn from every game
+
+For the other teams' bots (Kepiti's Fox, the Ganondorf agent) use party_teams.py.
 
 Ports: 1 = first agent (Fox), 2 = second agent (--p2-character; RANDOM gives it a new
 character every game), 3 = you, 4 = free. To add a Melee CPU, click the button above
@@ -21,7 +23,7 @@ off leaves its slot (N/A).
 In a game with more than two players each agent targets the nearest opponent.
 
 With --learn each agent samples its actions and runs one PPO update after every game,
-saving to models/<name>_live.zip. Its reward (v2) comes from its fight with you: your
+saving to <name>_live.zip next to the model. Its reward (v2) comes from its fight with you: your
 knockouts, the damage you take and its combos and whiffs on you. With more players, damage
 you take from someone else still counts for it.
 Close the Dolphin window or press Ctrl+C here to stop.
@@ -145,8 +147,8 @@ def configure_dolphin(console, keyboard: bool):
 
 def parse_args():
     p = argparse.ArgumentParser(description="You vs up to two trained Melee agents (and a CPU)")
-    p.add_argument("--p1", default="models/MK1.zip", help="agent on port 1, or 'none'")
-    p.add_argument("--p2", default="models/MK2.zip", help="agent on port 2, or 'none'")
+    p.add_argument("--p1", default="models/alejandro/MK5.zip", help="agent on port 1, or 'none'")
+    p.add_argument("--p2", default="models/all_models/random/MK6.zip", help="agent on port 2, or 'none'")
     p.add_argument("--p1-character", default="FOX")
     p.add_argument("--p2-character", default="RANDOM", help="a character, or RANDOM for a new one every game")
     p.add_argument("--input", choices=("xbox", "keyboard"), default="xbox", help="what you play with (port 3)")

@@ -34,6 +34,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 from stable_baselines3.common.vec_env.base_vec_env import CloudpickleWrapper
 from stable_baselines3.common.vec_env.subproc_vec_env import _worker
 
+from smash_rl.external_bots import bot_character, make_bot
 from smash_rl.rewards import RewardTracker, RewardWeights
 
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -158,6 +159,10 @@ class SmashEnv(gym.Env):
     its action is ignored, so CPU games fit in the same per-port interface. character="RANDOM"
     gives port 1 a new random character every game.
 
+    With two_player and opponent_bot=(kind, path) (see smash_rl/external_bots.py), port 2 is
+    another team's bot (Kepiti's Fox, the Ganondorf agent): built inside this process, it reads
+    the game state and sets port 2's controller every frame; action[1] is ignored.
+
     reward="v1" (M1, MK0-MK2), per step and from each player's point of view:
         damage_scale * (damage dealt - damage taken) + (stocks taken - stocks lost)
         - whiff_penalty * (A attacks that ended without hitting the opponent or their shield)
@@ -188,6 +193,7 @@ class SmashEnv(gym.Env):
         emulation_speed: float = 0.0,
         max_menu_frames: int = 6000,
         hang_timeout: float = 30.0,
+        opponent_bot: tuple = None,
     ):
         super().__init__()
         self.random_character = character.upper() == "RANDOM"
@@ -195,6 +201,13 @@ class SmashEnv(gym.Env):
         self.random_opponent = opponent.upper() == "RANDOM"
         self.human_opponent = opponent.upper() == "HUMAN"
         self.opponent = None if self.random_opponent or self.human_opponent else melee.Character[opponent.upper()]
+        self.opponent_bot = opponent_bot  # (kind, path); the bot itself is built in reset(), in the worker
+        self._bot = None
+        if opponent_bot is not None:
+            if not two_player or cpu_opponent:
+                raise ValueError("opponent_bot needs two_player=True and cpu_opponent=False")
+            self.random_opponent = False
+            self.opponent = melee.Character[bot_character(opponent_bot)]
         # Instant Match restarts a finished game without the menus. It is off with a random
         # opponent or a person (character select every game) and headless (it crashes the ExiAI build).
         self.instant_restart = not (self.random_character or self.random_opponent or self.human_opponent or headless)
@@ -428,6 +441,11 @@ class SmashEnv(gym.Env):
             raise RuntimeError("could not start a game after 5 attempts")
         if self.human_opponent:
             self.opponent = gs.players[2].character
+        if self.opponent_bot is not None:
+            if self._bot is None:
+                # Its network gets a couple of threads: several envs share the CPU with training.
+                self._bot = make_bot(self.opponent_bot, port=2, opponent_port=1, torch_threads=2)
+            self._bot.reset()
         self._gs = gs
         self._game_over = False
         self._prev = self._snapshot(gs)
@@ -457,7 +475,7 @@ class SmashEnv(gym.Env):
         return button
 
     def step(self, action):
-        if self.two_player and not self.cpu_opponent:
+        if self.two_player and not self.cpu_opponent and self._bot is None:
             pads = [(self.pad, action[0]), (self.cpu_pad, action[1])]
         else:
             pads = [(self.pad, action[0] if self.two_player else action)]
@@ -475,6 +493,8 @@ class SmashEnv(gym.Env):
                     for pad, button in pressed:
                         if button in TAP_BUTTONS:
                             pad.release_button(button)
+                if self._bot is not None:  # the other team's bot sets port 2 for this frame
+                    self._bot.act(gs, self.cpu_pad)
                 gs = self._next_state()
                 # Leaving the game, or the frame counter going back (a timed-out game was instantly restarted).
                 if gs.menu_state not in IN_GAME or gs.frame < self._gs.frame:

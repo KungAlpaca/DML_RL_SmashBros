@@ -267,6 +267,8 @@ def main():
     except KeyboardInterrupt:
         print(f"\nstopped at update {update} ({(time.time() - start) / 3600:.2f} h) - saving current models")
     finally:
+        for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            signal.signal(sig, signal.SIG_IGN)  # a second Ctrl+C or a closed terminal must not cut the save short
         for name, model in models.items():
             model.save(os.path.join(run_dir, name))
         print(f"saved {', '.join(f'{run_dir}/{name}.zip' for name in models)} | MK6 CPU level {cpu_level}", flush=True)

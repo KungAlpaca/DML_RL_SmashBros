@@ -33,6 +33,7 @@ from stable_baselines3 import PPO
 
 from play import GCPAD_INI, KEYBOARD_LAYOUT, PLAY_HOME, XBOX_LAYOUT, map_port_to_pipe, write_keyboard_controls
 from smash_rl import xbox_pad
+from smash_rl.external_bots import import_kepiti_foxbot
 from smash_rl.env import DEFAULT_DOLPHIN, DEFAULT_ISO, IN_GAME, PROJECT_DIR, TAP_BUTTONS, SmashEnv, observation
 from smash_rl.reaction import ReactionDelay
 from smash_rl.xbox_pad import XboxPad
@@ -52,25 +53,6 @@ def nearest_opponent(gs, port):
         return None
     return min(others, key=lambda item: (item[1].position.x - me.position.x) ** 2
                + (item[1].position.y - me.position.y) ** 2)[0]
-
-
-def import_kepiti_foxbot(repo: str):
-    """Kepiti's FoxBot class. His package is also called smash_rl, so it is imported with ours set
-    aside and then filed under 'kepiti_smash_rl.*' (his modules bind everything they use at import)."""
-    ours = {k: v for k, v in sys.modules.items() if k == "smash_rl" or k.startswith("smash_rl.")}
-    for k in ours:
-        del sys.modules[k]
-    sys.path.insert(0, repo)
-    try:
-        fox_bot = importlib.import_module("smash_rl.fox_bot")
-    finally:
-        sys.path.remove(repo)
-        theirs = {k: v for k, v in sys.modules.items() if k == "smash_rl" or k.startswith("smash_rl.")}
-        for k, v in theirs.items():
-            del sys.modules[k]
-            sys.modules["kepiti_" + k] = v
-        sys.modules.update(ours)
-    return fox_bot.FoxBot
 
 
 class Slot:

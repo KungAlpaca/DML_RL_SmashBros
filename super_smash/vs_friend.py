@@ -1,13 +1,12 @@
 """Our models against another team's agent, using that team's own match.py (nothing learns).
 
-The other agent (e.g. ../friend_ganondorf/ganondorf_agent with match.py, ganondorf_agent.py and its
-model) builds its own observations, so it runs in its own match loop; our model joins it as the
-FriendAgent from external/friend_agent.py. Each model plays --games games as port 1 and --games as
+The other agent (models/ganondorf: match.py, ganondorf_agent.py, meta.json and its model) builds its
+own observations, so it runs in its own match loop; our model joins it as the FriendAgent from
+external/friend_agent.py. Each model plays --games games as port 1 and --games as
 port 2, as Fox on Final Destination, headless; --parallel series (one Dolphin each) at a time.
 
 Usage:
-    python vs_friend.py --friend-dir ../../friend_ganondorf/ganondorf_agent --friend ganondorf \\
-        MK5=runs/mk56910_c/MK5.zip MK9=runs/mk56910_c/MK9.zip --games 10
+    python vs_friend.py MK5=models/alejandro/MK5.zip MK9=models/alejandro/MK9.zip --games 10
 """
 
 import argparse
@@ -26,7 +25,9 @@ GAME_LINE = re.compile(r"game \d+: P(\d) wins \| stocks (\d+)-(\d+)")
 def parse_args():
     p = argparse.ArgumentParser(description="Our models vs another team's agent through its match.py")
     p.add_argument("models", nargs="+", help="NAME=path.zip")
-    p.add_argument("--friend-dir", required=True, help="folder with the other team's match.py")
+    p.add_argument("--friend-dir", default=os.path.join(PROJECT_DIR, "models", "ganondorf"),
+                   help="folder with the other team's match.py")
+    p.add_argument("--friend-model", default="ganondorf_edge_v4.zip", help="its model, relative to --friend-dir")
     p.add_argument("--friend", default="ganondorf", help="the other agent's player name in its match.py")
     p.add_argument("--games", type=int, default=10, help="games per model on each port")
     p.add_argument("--parallel", type=int, default=6, help="series running at the same time")
@@ -42,7 +43,7 @@ def run_series(args, name, path, our_port, slippi_port):
                PYTHONPATH=os.pathsep.join([os.path.join(PROJECT_DIR, "external"), PROJECT_DIR]))
     p1, p2 = ("friend", args.friend) if our_port == 1 else (args.friend, "friend")
     cmd = [sys.executable, "match.py", "--dolphin", HEADLESS_DOLPHIN, "--iso", DEFAULT_ISO, "--p1", p1, "--p2", p2,
-           "--games", str(args.games), "--slippi-port", str(slippi_port)]
+           "--model", args.friend_model, "--games", str(args.games), "--slippi-port", str(slippi_port)]
     try:
         out = subprocess.run(cmd, cwd=args.friend_dir, env=env, capture_output=True, text=True,
                              timeout=args.timeout_min * 60 * args.games).stdout

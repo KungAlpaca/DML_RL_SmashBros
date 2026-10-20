@@ -5,7 +5,7 @@ port 2 and gets a random character every game. Every update both models play the
 games (each from its own side), then each runs its own PPO update on what it saw.
 
 Usage:
-    python selfplay.py --init models/MK0.zip --updates 300 --run-name mk_selfplay
+    python selfplay.py --init models/all_models/fox/MK0.zip --updates 300 --run-name mk_selfplay
     python selfplay.py --mk1 runs/mk_selfplay/MK1.zip --mk2 runs/mk_selfplay/MK2.zip --updates 200 --run-name mk_more
 
 Writes runs/<run>/MK1.zip and MK2.zip at the end (also on Ctrl+C), checkpoints every
@@ -91,7 +91,7 @@ def log_games(model, games, side):
 
 def parse_args():
     p = argparse.ArgumentParser(description="Train MK1 (Fox, port 1) and MK2 (random character, port 2) against each other")
-    p.add_argument("--init", default="models/MK0.zip", help="starting weights for both models")
+    p.add_argument("--init", default="models/all_models/fox/MK0.zip", help="starting weights for both models")
     p.add_argument("--mk1", default=None, help="starting weights for MK1 only (e.g. to continue a run)")
     p.add_argument("--mk2", default=None, help="starting weights for MK2 only")
     p.add_argument("--updates", type=int, default=200,

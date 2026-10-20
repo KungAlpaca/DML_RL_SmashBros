@@ -1,9 +1,11 @@
 """Play two trained models against each other (no training) and report who wins.
 
 Usage:
-    python versus.py models/MK1.zip models/MK2.zip                       # watch 3 games, MK2 a random character
-    python versus.py models/MK1.zip models/MK2.zip --games 20 --headless
-    python versus.py models/M1.zip models/MK1.zip --p2-character FOX --headless
+    python versus.py models/all_models/fox/MK5.zip models/all_models/random/MK6.zip                     # watch 3 games, MK6 a random character
+    python versus.py models/all_models/fox/MK5.zip models/all_models/fox/MK3.zip --p2-character FOX --games 20 --headless
+    python versus.py models/all_models/fox/M1.zip models/all_models/fox/MK1.zip --p2-character FOX --headless
+
+Models with a reaction time (MK7-MK10) play without it here; tournament.py and play.py use it.
 
 The first model is port 1, the second port 2.
 """

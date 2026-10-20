@@ -4,7 +4,9 @@ Usage:
     python play.py runs/<run>/final_model.zip                      # Xbox controller plugged in by USB
     python play.py runs/<run>/final_model.zip --input keyboard
     python play.py runs/<run>/final_model.zip --smash-hold-ms 150  # direction + A held = smash (off by default)
-    python play.py models/MK3.zip --learn                          # the agent learns from every game
+    python play.py models/alejandro/MK5.zip                        # our best Fox
+    python play.py models/all_models/random/MK6.zip --character RANDOM
+    python play.py models/all_models/fox/MK3.zip --learn           # the agent learns from every game
 
 The agent is port 1 and picks Fox; you are port 2. On the character select screen
 pick your character and press Start; the agent then picks Final Destination, the
@@ -17,7 +19,7 @@ Dolphin: its mapping lives in dolphin/play_home and can be changed with Controll
 Port 2 > Configure in the Dolphin window (kept until you pass --remap).
 
 With --learn the agent samples its actions and runs one PPO update on each game it plays
-against you (reward v2), saving to models/<name>_live.zip (or --save-to) after every game;
+against you (reward v2), saving to <name>_live.zip next to the model (or --save-to) after every game;
 the original model is not touched. Load the _live file next time to keep improving it.
 """
 

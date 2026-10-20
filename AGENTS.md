@@ -9,7 +9,7 @@ Human docs: `README.md`, `super_smash/README.md`, `super_mario/README.md`.
 
 - Each project has its own `.venv` (Python 3.10). Run commands from inside the project
   folder with that venv: `cd super_smash && .venv/bin/python ...`.
-- Never commit game files (`*.iso`, `*.zip` except `super_smash/models/*.zip`),
+- Never commit game files (`*.iso`, `*.zip` except `super_smash/models/**/*.zip`),
   emulators (`super_smash/dolphin/`), `.venv/` or `runs/`. They are git-ignored; keep it so.
 - Code, comments, CLI help and printed messages are in English. Comments are sparse
   and explain why, not what. Every option is an argparse flag with a help string, and
@@ -22,15 +22,15 @@ Human docs: `README.md`, `super_smash/README.md`, `super_mario/README.md`.
 | Path | Contents |
 |---|---|
 | `smash_rl/env.py` | `SmashEnv` (Gymnasium env), `ACTIONS`, observation layout, `make_vec_env`, `NonDaemonSubprocVecEnv`, `SmashMonitor` |
-| `smash_rl/xbox_pad.py` | `XboxPad`: reads an Xbox pad from evdev in a thread and drives port 2 through a libmelee pipe; `find_pad()` |
+| `smash_rl/xbox_pad.py` | `XboxPad`: reads an Xbox pad from evdev in a thread and drives its port through a libmelee pipe; `find_pad()`. `charge_smash`: on the ground the right stick held = control stick + A held (Melee only charges smashes with A); `sys.setswitchinterval` lowered so the pad thread isn't starved by the bots' networks |
 | `train.py` | PPO setup, `SmashStatsCallback` (TensorBoard `smash/*` stats + curriculum), `UpdateCheckpointCallback` |
 | `evaluate.py` | Plays N games per model (or per `.zip` in a folder, writing `eval_results.csv`) |
 | `play.py` | Human vs model. `HumanEnv` = `SmashEnv` + `XboxPad`; keyboard mapping written to Dolphin's `GCPadNew.ini` |
 | `selfplay.py` | Stage 2: two PPO models trained at the same time against each other (custom rollout loop, see below) |
 | `versus.py` | Two models play each other in a `two_player` env, no training |
 | `league.py` | MK3 (Fox), MK4 (RANDOM), MK5 (Fox), MK6 (RANDOM, starts from MK5) all learning, reward v2, for `--hours` (lr decays over them). 8 games: the 6 model pairs (both sides learn), MK6 vs a CPU curriculum (`set_cpu_level` on game `CURRICULUM_GAME`), and MK3/MK4/MK5 rotating vs CPU 9 every `--rotate-every` updates (vec env rebuilt). MK2 is no longer used. The MK6 CPU level is not saved: pass `--mk6-cpu-start` when resuming. `--frozen MK4` = plays but never trains (no buffer, no `train()`, out of the CPU rotation); `--ent-mkN` overrides `ent_coef` |
-| `league_mk5678.py` | Lineup-driven engine (`Lineup`: characters, frozen, new, curriculum, fixed games, rotation, lrs); its `MK5678` lineup: MK5, MK6 (continued), MK7 (Fox) and MK8 (RANDOM) from scratch (`from_scratch`: template's PPO settings, `_setup_model()`), MK3/MK4 frozen opponents. MK7/MK8 train with `ReactionDelay` per game slot (`--reaction-mk7/8`, 200 ms, saved as `model.reaction_ms`; `peek` for the value bootstrap). 8 games: MK7/MK8 each vs its own CPU curriculum, MK7 vs MK8, MK5 vs MK6, plus 4 from `ROTATION` every `--rotate-every` |
-| `league_mk56910.py` | Same engine (`league_mk5678.Lineup` + `main(lineup)`): MK5, MK6 continue; MK9 (Fox) starts from MK5's weights and MK10 (RANDOM) from MK6's (`Lineup.new`, `--mk9-init`), both with 200 ms reaction; MK3/MK4 frozen; CPU curricula start at 7. MK7/MK8 (from scratch + delay) stalled at CPU 4-5 and are kept only as a record |
+| `league_mk5678.py` | Lineup-driven engine (`Lineup`: characters, frozen, new, curriculum, fixed games, rotation, lrs, bots; anything not in `lu.models` is skipped in the stats and gets no slots; a second signal can't interrupt the final save); its `MK5678` lineup: MK5, MK6 (continued), MK7 (Fox) and MK8 (RANDOM) from scratch (`from_scratch`: template's PPO settings, `_setup_model()`), MK3/MK4 frozen opponents. MK7/MK8 train with `ReactionDelay` per game slot (`--reaction-mk7/8`, 200 ms, saved as `model.reaction_ms`; `peek` for the value bootstrap). 8 games: MK7/MK8 each vs its own CPU curriculum, MK7 vs MK8, MK5 vs MK6, plus 4 from `ROTATION` every `--rotate-every` |
+| `league_mk56910.py` | Same engine (`league_mk5678.Lineup` + `main(lineup)`): MK5, MK6 continue; MK9 (Fox) starts from MK5's weights and MK10 (RANDOM) from MK6's (`Lineup.new`, `--mk9-init`), with 200 ms reaction (`--reaction-mk10 100` for the final MK10: two 200 ms tries degraded); MK3/MK4 frozen; CPU curricula start at 7. MK7/MK8 (from scratch + delay) stalled at CPU 4-5 and are kept only as a record |
 | `party.py` | Human (port 3, Xbox via `XboxPad(port=3)` or keyboard) vs up to two models (ports 1-2) + optional Melee CPU on port 4; no `SmashEnv`, its own libmelee loop; agents target the nearest opponent |
 | `smash_rl/rewards.py` | Reward v2 (`RewardTracker`, `RewardWeights`, `REPEAT_LIMITS`) |
 | `smash_rl/combos.py` | Per-character `COMBOS`, `move_of` (action state -> move name), `ComboTracker` |
@@ -39,7 +39,12 @@ Human docs: `README.md`, `super_smash/README.md`, `super_mario/README.md`.
 | `docs/COMBOS.md` | Generated by `docs/make_combos_doc.py` from the two files above; regenerate after editing them |
 | `test_env.py` | One env, `check_env`, random actions, speed |
 | `setup.sh` | venv (uv or python3.10) + downloads Slippi Dolphin 3.6.4 and, on Linux, the ExiAI headless build |
-| `models/` | `M1.zip` (shipped, no whiff penalty); `MK0.zip`, `MK1.zip`, `MK2.zip` once the user trains them (README "Models and training stages") |
+| `models/` | Final weights only (`models/README.md` documents every model): `alejandro/` (MK5, MK9: the user's picks), `kepiti/` (Kepiti's `.pt` LSTM Foxes; his code runs them, from his repo), `ganondorf/` (a friend's SB3 agent + its `ganondorf_agent.py`, `match.py`, `meta.json`), `all_models/fox|random/` (M1, MK0-MK10, `_live` and failed MK10 tries). Copies are identical files (git stores them once) |
+| `party_teams.py` | FFA: P1 our `.zip` (`OurBot`, `observation()` + `ReactionDelay`), P2 Kepiti's `FoxBot`, P3 `GanondorfAgent` (`ForeignBot` sets `bot.opponent_port` to the nearest opponent every frame), P4 human (`XboxPad(port=4)` / keyboard) or a CPU (`CpuSlot`) or none |
+| `tournament.py` | Round robin of our models + vs CPU, no training: `--pair-envs` two_player envs reused across match-ups (models fed per game, `ReactionDelay` per side), `--cpu-envs` CPU envs; CSV + tables |
+| `vs_friend.py`, `external/friend_agent.py` | Our model as `FriendAgent` inside `models/ganondorf/match.py` (subprocesses, `PYTHONPATH=external:.`; match.py's own dir comes first on sys.path, so never put a `friend_agent.py` there) |
+| `smash_rl/external_bots.py` | `make_bot((kind, path), port, opponent_port)`: Kepiti's `FoxBot` (`import_kepiti_foxbot`: his package is also `smash_rl`, imported with ours set aside and re-filed as `kepiti_smash_rl.*`; repo from `KEPITI_REPO` or `~/Documents/DML/super_smash_RL`) or `GanondorfAgent` |
+| `league_final.py` | Lineup for the final training: MK5, MK9 learn; MK5_OLD / MK9_OLD (frozen copies, half the games), MK3 / MK6 / MK10 frozen, CPU 9 and `Lineup.bots` KEPITI_RL / KEPITI_IL / GANONDORF (port 2 via `opponent_bot`). Kepiti's games are grouped in one rotation set because his per-frame CPU LSTM slows the lockstep vec env ~3x |
 | `Super Smash Bros Melee v1.02.iso` | Not in git; each user provides it (`DEFAULT_ISO`) |
 | `dolphin/` | Not in git: `Slippi_Online-x86_64.AppImage` (windowed), `Slippi_Online-x86_64-ExiAI.AppImage` (headless), `Slippi Dolphin.app` (macOS), `play_home/` (persistent Dolphin user folder for `play.py`) |
 
@@ -63,10 +68,14 @@ Human docs: `README.md`, `super_smash/README.md`, `super_mario/README.md`.
   needs `NonDaemonSubprocVecEnv` even for one env (`DummyVecEnv` preallocates 1-D obs).
 - `reward="v2"`: `_frame_reward` delegates to `rewards.RewardTracker` (built in `reset()` with
   the in-game characters; `step()` passes each port's stick/button via `set_input` so specials can
-  be named by B direction). Stats then include `repeats`, `combo_hits`, `combos`, `blocks`,
-  `dodges`, `reflects`. Weights live in `RewardWeights` / `ComboWeights`.
+  be named by B direction). Stats then include `repeats`, `combo_hits`, `combos`, `defences`,
+  `smashes`, `smash_spam`, `spam_penalty` (`STAT_KEYS`). Weights live in `RewardWeights` / `ComboWeights`.
 - `two_player=True, cpu_opponent=True`: port 2 is the Melee CPU at `cpu_level`; `step()` ignores
   `action[1]`. `character="RANDOM"` randomizes port 1 every game (MK4).
+- `two_player=True, opponent_bot=(kind, path)`: port 2 is another team's bot, built in `reset()` inside
+  the worker (`external_bots.make_bot`, 2 torch threads), reset every game, and called with the
+  current game state before every frame (`self._bot.act(gs, self.cpu_pad)`); `action[1]` is ignored.
+  The league engine passes it for names in `Lineup.bots`.
 - `observation(gs, me, op, edge)` / `player_features(p, edge)` are module functions so callers
   with more than two players (party.py) can build a model's input against any opponent.
 - `whiff_penalty` (v1 only): `_track_attack` follows each A attack (action ids in `ATTACK_ACTIONS`,
@@ -122,10 +131,10 @@ game end `won`, `stock_diff` (logged via `SmashMonitor` / `INFO_KEYWORDS`).
 cd super_smash
 .venv/bin/python test_env.py --headless --steps 3000                  # env end to end, ~20 s
 .venv/bin/python test_env.py --headless --opponent RANDOM --cpu-level 9
-.venv/bin/python evaluate.py models/M1.zip --headless --games 5 --port 51530
+.venv/bin/python evaluate.py models/all_models/fox/M1.zip --headless --games 5 --port 51530
 .venv/bin/python train.py --n-envs 2 --timesteps 20000 --run-name smoke --base-port 51560
-.venv/bin/python versus.py models/M1.zip models/M1.zip --games 2 --headless --port 51540
-.venv/bin/python selfplay.py --init models/M1.zip --updates 2 --n-envs 2 --base-port 51600 --run-name sp_smoke
+.venv/bin/python versus.py models/all_models/fox/M1.zip models/all_models/fox/M1.zip --games 2 --headless --port 51540
+.venv/bin/python selfplay.py --init models/all_models/fox/M1.zip --updates 2 --n-envs 2 --base-port 51600 --run-name sp_smoke
 pgrep -af "^/tmp/.mount_Slippi" || echo "no Dolphin left"              # leftovers
 ```
 
