@@ -31,7 +31,7 @@ import melee
 from stable_baselines3 import PPO
 
 from smash_rl import xbox_pad
-from smash_rl.env import DEFAULT_DOLPHIN, PROJECT_DIR, SmashEnv
+from smash_rl.env import DEFAULT_DOLPHIN, PROJECT_DIR, SmashEnv, model_frame_skip
 from smash_rl.live_learning import LiveLearner, live_path
 from smash_rl.reaction import ReactionDelay
 from smash_rl.xbox_pad import XboxPad
@@ -151,7 +151,8 @@ def parse_args():
     p.add_argument("--no-charge-smash", action="store_true",
                    help="Xbox: the right stick is a plain C-stick (default: on the ground, holding it charges a smash)")
     p.add_argument("--character", default="FOX", help="the agent's character, must match training")
-    p.add_argument("--frame-skip", type=int, default=3, help="must match training")
+    p.add_argument("--frame-skip", type=int, default=None,
+                   help="frames each action is held (default: the model's own, as trained; 3 for older models)")
     p.add_argument("--reaction-ms", type=float, default=None,
                    help="agent reaction time in ms: it sees the game this long ago (default: the model's own, "
                         "200 for MK7 / MK8, 0 = instant for older models)")
@@ -167,7 +168,9 @@ def parse_args():
 def main():
     args = parse_args()
     os.makedirs(PLAY_HOME, exist_ok=True)
-    env_kwargs = dict(character=args.character, opponent="HUMAN", frame_skip=args.frame_skip, port=args.port,
+    model = PPO.load(args.model, device="cpu")
+    frame_skip = args.frame_skip or model_frame_skip(model)
+    env_kwargs = dict(character=args.character, opponent="HUMAN", frame_skip=frame_skip, port=args.port,
                       emulation_speed=1.0, dolphin_home=PLAY_HOME, reward=args.reward)
     pad = None
     if args.input == "xbox":
@@ -183,7 +186,6 @@ def main():
             print(KEYBOARD_LAYOUT)
         env = SmashEnv(**env_kwargs)
 
-    model = PPO.load(args.model, device="cpu")
     if model.observation_space.shape != env.observation_space.shape:
         raise SystemExit(f"{args.model} expects observations of shape {model.observation_space.shape}, "
                          f"but the game gives {env.observation_space.shape}: it was trained with an older env.py")
@@ -193,8 +195,8 @@ def main():
         print(f"learning mode: the agent improves after every game and is saved to {learner.save_path}")
 
     delay = ReactionDelay(getattr(model, "reaction_ms", 0) if args.reaction_ms is None else args.reaction_ms,
-                          args.frame_skip)
-    print(f"agent reaction time: {delay.ms:.0f} ms")
+                          frame_skip)
+    print(f"agent reaction time: {delay.ms:.0f} ms, one decision every {frame_skip} frames")
     results = []
     try:
         while True:

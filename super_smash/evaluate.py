@@ -22,7 +22,7 @@ import os
 import numpy as np
 from stable_baselines3 import PPO
 
-from smash_rl.env import SmashEnv
+from smash_rl.env import SmashEnv, model_frame_skip
 
 
 def parse_args():
@@ -32,7 +32,7 @@ def parse_args():
     p.add_argument("--opponent", default="FOX", help="CPU character, or RANDOM for a new random character every game")
     p.add_argument("--stage", default="FINAL_DESTINATION")
     p.add_argument("--cpu-level", type=int, default=9)
-    p.add_argument("--frame-skip", type=int, default=3, help="must match training")
+    p.add_argument("--frame-skip", type=int, default=None, help="frames each action is held (default: the models' own, as trained; 3 for older models)")
     p.add_argument("--games", type=int, default=3)
     p.add_argument("--stochastic", action="store_true", help="sample actions instead of taking the most likely one")
     p.add_argument("--fast", action="store_true", help="run the emulator unthrottled instead of at 60 fps")
@@ -98,9 +98,12 @@ def evaluate_folder(folder, env, args):
 
 def main():
     args = parse_args()
+    first = sorted(glob.glob(os.path.join(args.model, "*.zip")))[:1] if os.path.isdir(args.model) else [args.model]
+    # Checkpoints of one run share their frame skip; the first model sets it for the env.
+    frame_skip = args.frame_skip or (model_frame_skip(PPO.load(first[0], device="cpu")) if first else 3)
     env = SmashEnv(
         character=args.character, opponent=args.opponent, stage=args.stage,
-        cpu_level=args.cpu_level, frame_skip=args.frame_skip, port=args.port,
+        cpu_level=args.cpu_level, frame_skip=frame_skip, port=args.port,
         emulation_speed=0.0 if args.fast or args.headless else 1.0, headless=args.headless,
     )
     try:

@@ -22,7 +22,7 @@ import torch
 from stable_baselines3 import PPO
 from stable_baselines3.common.utils import obs_as_tensor
 
-from smash_rl.env import CAN_RUN_HEADLESS, NonDaemonSubprocVecEnv, SmashEnv
+from smash_rl.env import CAN_RUN_HEADLESS, NonDaemonSubprocVecEnv, SmashEnv, model_frame_skip
 from smash_rl.reaction import ReactionDelay
 
 STATS = ("won", "stock_diff", "damage_dealt", "damage_taken", "kills", "deaths", "attacks", "whiffs", "combos",
@@ -42,7 +42,7 @@ def parse_args():
     p.add_argument("--deterministic", action="store_true",
                    help="take the most likely action (default: sample, as in training; identical "
                         "deterministic models can replay the same game)")
-    p.add_argument("--frame-skip", type=int, default=3)
+    p.add_argument("--frame-skip", type=int, default=None, help="frames each action is held (default: the models' own, as trained; 3 for older models)")
     p.add_argument("--base-port", type=int, default=51700)
     p.add_argument("--out", default="tournament_results.csv")
     return p.parse_args()
@@ -55,7 +55,14 @@ def main():
         name, path = spec.split("=", 1)
         models[name] = PPO.load(path, device="cpu")
         delays_ms[name] = getattr(models[name], "reaction_ms", 0)
-    print("models: " + ", ".join(f"{n} ({delays_ms[n]:g} ms)" for n in models), flush=True)
+    skips = {model_frame_skip(m) for m in models.values()}
+    if args.frame_skip is None:
+        if len(skips) > 1:
+            raise SystemExit(f"the models act every {sorted(skips)} frames, but both players of a game share one "
+                             "frame skip: pass --frame-skip, or compare them in separate runs")
+        args.frame_skip = skips.pop()
+    print(f"models (every {args.frame_skip} frames): " + ", ".join(f"{n} ({delays_ms[n]:g} ms)" for n in models),
+          flush=True)
 
     pair_queue = deque()
     for a, b in combinations(models, 2):

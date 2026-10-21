@@ -44,7 +44,8 @@ from stable_baselines3 import PPO
 
 from play import GCPAD_INI, PLAY_HOME, map_port_to_pipe, write_keyboard_controls, KEYBOARD_LAYOUT, XBOX_LAYOUT
 from smash_rl import xbox_pad
-from smash_rl.env import ACTIONS, DEFAULT_DOLPHIN, DEFAULT_ISO, IN_GAME, RANDOM_OPPONENTS, TAP_BUTTONS, SmashEnv, observation
+from smash_rl.env import (ACTIONS, DEFAULT_DOLPHIN, DEFAULT_ISO, IN_GAME, RANDOM_OPPONENTS, TAP_BUTTONS, SmashEnv,
+                           model_frame_skip, observation)
 from smash_rl.live_learning import LiveLearner, live_path
 from smash_rl.reaction import ReactionDelay
 from smash_rl.rewards import RewardTracker, RewardWeights
@@ -60,9 +61,10 @@ class Bot:
     def __init__(self, name, path, port, character, console, deterministic, reaction_ms, frame_skip, learn_lr=None):
         self.name, self.port, self.deterministic = name, port, deterministic
         self.model = PPO.load(path, device="cpu")
+        self.frame_skip = frame_skip or model_frame_skip(self.model)
         if reaction_ms is None:
             reaction_ms = getattr(self.model, "reaction_ms", 0)
-        self.delay = ReactionDelay(reaction_ms, frame_skip)
+        self.delay = ReactionDelay(reaction_ms, self.frame_skip)
         self.learner = LiveLearner(self.model, live_path(path), learn_lr) if learn_lr else None
         self.tracker = None  # reward v2 against the human, while learning
         self.pending_reward = 0.0
@@ -102,8 +104,9 @@ class Bot:
             print(f"  {self.name}: {self.learner.end_game()}")
         self.tracker = None
 
-    def act(self, gs, edge, frame_skip):
+    def act(self, gs, edge):
         """Pick an action every frame_skip frames, against the nearest opponent still in the game."""
+        frame_skip = self.frame_skip
         me = gs.players.get(self.port)
         if self.tracker is not None and me is not None and HUMAN_PORT in gs.players:
             self.pending_reward += float(self.tracker.frame(self._duel(gs))[0])
@@ -156,7 +159,8 @@ def parse_args():
     p.add_argument("--smash-hold-ms", type=int, default=0, help="Xbox: >0 makes a direction + A held this long a smash (delays A; off by default)")
     p.add_argument("--no-charge-smash", action="store_true",
                    help="Xbox: the right stick is a plain C-stick (default: on the ground, holding it charges a smash)")
-    p.add_argument("--frame-skip", type=int, default=3, help="must match training")
+    p.add_argument("--frame-skip", type=int, default=None,
+                   help="frames each action is held (default: each model's own, as trained; 3 for older models)")
     p.add_argument("--reaction-ms", type=float, default=None,
                    help="agent reaction time in ms: it sees the game this long ago (default: the model's own, "
                         "200 for MK7 / MK8, 0 = instant for older models)")
@@ -196,7 +200,7 @@ def main():
     lead = bots[0]
     edge = melee.stages.EDGE_GROUND_POSITION[melee.Stage.FINAL_DESTINATION]
     for bot, path in zip(bots, [p for p in (args.p1, args.p2) if p.lower() != "none"]):
-        print(f"{bot.name}: port {bot.port}, {path}, reaction {bot.delay.ms:.0f} ms, "
+        print(f"{bot.name}: port {bot.port}, {path}, reaction {bot.delay.ms:.0f} ms, every {bot.frame_skip} frames, "
               f"{'a random character every game' if bot.random_character else bot.character.name}")
 
     console.run(iso_path=DEFAULT_ISO)
@@ -260,7 +264,7 @@ def main():
                         bot.start_game(gs)
                 last_game = gs
                 for bot in bots:
-                    bot.act(gs, edge, args.frame_skip)
+                    bot.act(gs, edge)
                 continue
             last_game = None if gs.menu_state == CSS else last_game
             for bot in bots:

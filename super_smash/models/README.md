@@ -20,7 +20,9 @@ The project compares four ways of training a Fox:
 
 ## Every model
 
-"Reaction" is how late the model sees the game (saved inside our `.zip` files as `reaction_ms`; `play.py`,
+Every model here decides every 3 frames (20 times per second); MK5 and MK9 continue training at 2 frames
+(30 per second). The rate is saved in each model (`frame_skip`) and all scripts use it. "Reaction" is how
+late the model sees the game (saved inside our `.zip` files as `reaction_ms`; `play.py`,
 `party.py`, `party_teams.py` and `tournament.py` apply it). Steps count every game a model learned from,
 across its parallel games. Hours are wall-clock training time (≈: summed over several runs).
 

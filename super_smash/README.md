@@ -287,9 +287,12 @@ tensorboard --logdir runs        # open http://localhost:6006
   off stage, invulnerable, hitlag and hitstun left, jumps left, shield, self and
   knockback speeds, animation frame, distance to the edge, IASA), a 27-way character
   one-hot and a 400-way action-state one-hot. Global: dx, dy, distance and game time.
-- **Actions:** 31 discrete stick + button combinations, each held for 3 frames
-  (20 decisions per second): stick only in 9 directions, A + 9 directions, B + 5,
-  X (jump) + 3, Z (grab), L (shield, roll left/right, spot dodge).
+- **Actions:** 31 discrete stick + button combinations: stick only in 9 directions, A + 9 directions,
+  B + 5, X (jump) + 3, Z (grab), L (shield, roll left/right, spot dodge). Each is held for `frame_skip`
+  frames: 3 (20 decisions per second) for every model up to MK10; MK5 and MK9 continue at 2 (30 per
+  second, `league_final.py --frame-skip 2`). The value is saved in each model (`frame_skip`) and every
+  play, party, evaluation and tournament script uses it; when it changes, the league scripts convert
+  gamma and GAE lambda so the horizon stays the same in seconds.
 - **Reaction time** (`smash_rl/reaction.py`): MK7-MK10 see the observation from N decisions ago
   (200 ms = 4 decisions), in training and in play.
 - **Reward:** v1 (M1-MK2) is `0.01 x (damage dealt - damage taken) + (stocks taken - stocks lost)`

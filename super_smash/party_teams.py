@@ -34,14 +34,14 @@ from stable_baselines3 import PPO
 from play import GCPAD_INI, KEYBOARD_LAYOUT, PLAY_HOME, XBOX_LAYOUT, map_port_to_pipe, write_keyboard_controls
 from smash_rl import xbox_pad
 from smash_rl.external_bots import import_kepiti_foxbot
-from smash_rl.env import DEFAULT_DOLPHIN, DEFAULT_ISO, IN_GAME, PROJECT_DIR, TAP_BUTTONS, SmashEnv, observation
+from smash_rl.env import (DEFAULT_DOLPHIN, DEFAULT_ISO, IN_GAME, PROJECT_DIR, TAP_BUTTONS, SmashEnv,
+                           model_frame_skip, observation)
 from smash_rl.reaction import ReactionDelay
 from smash_rl.xbox_pad import XboxPad
 
 CSS = melee.Menu.CHARACTER_SELECT
 FD = melee.Stage.FINAL_DESTINATION
 EDGE = melee.stages.EDGE_GROUND_POSITION[FD]
-FRAME_SKIP = 3
 HUMAN_PORT = 4
 
 
@@ -93,7 +93,8 @@ class OurBot(Slot):
         super().__init__(f"P{port} ours ({os.path.basename(path)})", port, console)
         self.model = PPO.load(path, device="cpu")
         self.deterministic = deterministic
-        self.delay = ReactionDelay(getattr(self.model, "reaction_ms", 0), FRAME_SKIP)
+        self.frame_skip = model_frame_skip(self.model)
+        self.delay = ReactionDelay(getattr(self.model, "reaction_ms", 0), self.frame_skip)
         self.button = None
 
     def start_game(self, gs):
@@ -103,11 +104,11 @@ class OurBot(Slot):
         target = nearest_opponent(gs, self.port)
         if target is None:
             return
-        if gs.frame % FRAME_SKIP == 0:
+        if gs.frame % self.frame_skip == 0:
             obs = self.delay(observation(gs, gs.players[self.port], gs.players[target], EDGE))
             action, _ = self.model.predict(obs, deterministic=self.deterministic)
             self.button = SmashEnv._press(self.pad, int(action))
-        elif gs.frame % FRAME_SKIP == FRAME_SKIP - 1 and self.button in TAP_BUTTONS:
+        elif gs.frame % self.frame_skip == self.frame_skip - 1 and self.button in TAP_BUTTONS:
             self.pad.release_button(self.button)
 
 
@@ -218,7 +219,7 @@ def main():
         raise SystemExit("at least one of P1-P3 is needed (it also drives the menus)")
     lead = bots[0]
     for s in slots:
-        extra = f", reaction {s.delay.ms:.0f} ms" if isinstance(s, OurBot) else ""
+        extra = f", reaction {s.delay.ms:.0f} ms, every {s.frame_skip} frames" if isinstance(s, OurBot) else ""
         print(f"{s.name}: {s.character.name}{extra}" + (f" level {s.cpu_level}" if s.cpu_level else ""))
     print(f"P4: {args.p4}")
 

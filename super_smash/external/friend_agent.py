@@ -8,8 +8,8 @@ agent). Put this folder first on PYTHONPATH and pick the model with environment 
     SMASH_CHARACTER=FOX              the character it plays (default FOX)
     SMASH_DETERMINISTIC=0            1: most likely action, 0: sample as in training (default)
 
-It plays exactly like in our env: observation() from smash_rl.env, one action every 3 frames,
-A/B/X/Z released on the 3rd frame. vs_friend.py runs whole series with it.
+It plays exactly like in our env: observation() from smash_rl.env, one action every frame_skip frames (the model's),
+A/B/X/Z released on the last frame of each action. vs_friend.py runs whole series with it.
 """
 
 import os
@@ -17,10 +17,8 @@ import os
 import melee
 from stable_baselines3 import PPO
 
-from smash_rl.env import TAP_BUTTONS, SmashEnv, observation
+from smash_rl.env import TAP_BUTTONS, SmashEnv, model_frame_skip, observation
 from smash_rl.reaction import ReactionDelay
-
-FRAME_SKIP = 3
 
 
 class FriendAgent:
@@ -30,7 +28,8 @@ class FriendAgent:
         self.port, self.opponent_port = port, opponent_port
         self.model = PPO.load(os.environ["SMASH_MODEL"], device="cpu")
         self.deterministic = os.environ.get("SMASH_DETERMINISTIC", "0") == "1"
-        self.delay = ReactionDelay(getattr(self.model, "reaction_ms", 0), FRAME_SKIP)
+        self.frame_skip = model_frame_skip(self.model)
+        self.delay = ReactionDelay(getattr(self.model, "reaction_ms", 0), self.frame_skip)
         self.edge = melee.stages.EDGE_GROUND_POSITION[melee.Stage.FINAL_DESTINATION]
         self.reset()
 
@@ -41,12 +40,12 @@ class FriendAgent:
     def act(self, gs, controller):
         if self.port not in gs.players or self.opponent_port not in gs.players:
             return
-        step = self.frame % FRAME_SKIP
+        step = self.frame % self.frame_skip
         self.frame += 1
         if step == 0:
             me, op = gs.players[self.port], gs.players[self.opponent_port]
             obs = self.delay(observation(gs, me, op, self.edge))
             action, _ = self.model.predict(obs, deterministic=self.deterministic)
             self.button = SmashEnv._press(controller, int(action))
-        elif step == FRAME_SKIP - 1 and self.button in TAP_BUTTONS:
+        elif step == self.frame_skip - 1 and self.button in TAP_BUTTONS:
             controller.release_button(self.button)

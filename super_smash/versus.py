@@ -15,7 +15,7 @@ import argparse
 import numpy as np
 from stable_baselines3 import PPO
 
-from smash_rl.env import SmashEnv
+from smash_rl.env import SmashEnv, model_frame_skip
 
 
 def parse_args():
@@ -26,7 +26,7 @@ def parse_args():
     p.add_argument("--p2-character", default="RANDOM", help="a character, or RANDOM for a new one every game")
     p.add_argument("--stage", default="FINAL_DESTINATION")
     p.add_argument("--games", type=int, default=3)
-    p.add_argument("--frame-skip", type=int, default=3, help="must match training")
+    p.add_argument("--frame-skip", type=int, default=None, help="frames each action is held (default: the models' own, as trained; 3 for older models)")
     p.add_argument("--stochastic", action="store_true", help="sample actions instead of taking the most likely one")
     p.add_argument("--fast", action="store_true", help="run the emulator unthrottled instead of at 60 fps")
     p.add_argument("--headless", action="store_true", help="no window and fast-forward mode (Linux only, fastest)")
@@ -37,8 +37,11 @@ def parse_args():
 def main():
     args = parse_args()
     models = [PPO.load(path, device="cpu") for path in (args.p1_model, args.p2_model)]
+    skips = {model_frame_skip(m) for m in models}
+    if args.frame_skip is None and len(skips) > 1:
+        raise SystemExit(f"the models act every {sorted(skips)} frames and share one game: pass --frame-skip")
     env = SmashEnv(two_player=True, character=args.p1_character, opponent=args.p2_character, stage=args.stage,
-                   frame_skip=args.frame_skip, port=args.port, headless=args.headless,
+                   frame_skip=args.frame_skip or skips.pop(), port=args.port, headless=args.headless,
                    emulation_speed=0.0 if args.fast or args.headless else 1.0)
     results = []
     try:

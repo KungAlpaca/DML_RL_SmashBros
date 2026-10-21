@@ -66,6 +66,14 @@ ACTIONS = (
 # Buttons released on the last frame of each action repeat so they can be
 # pressed again on the next step. Shield is kept held, since dropping it costs frames.
 TAP_BUTTONS = (B.BUTTON_A, B.BUTTON_B, B.BUTTON_X, B.BUTTON_Z)
+# Frames each action is held (60 / frame_skip decisions per second). Models trained with another value
+# store it as model.frame_skip (MK5 and MK9 from the final training: 2); older ones used this one.
+DEFAULT_FRAME_SKIP = 3
+
+
+def model_frame_skip(model) -> int:
+    """How many frames the model holds each action, as it was trained."""
+    return int(getattr(model, "frame_skip", DEFAULT_FRAME_SKIP))
 
 NUM_ANIMATIONS = 400  # libmelee action ids are < 400
 NUM_CHARACTERS = 27  # in-game character ids 0..26 (Mario .. Roy); Sheik and the Ice Climbers have their own

@@ -39,7 +39,7 @@ from stable_baselines3.common.utils import obs_as_tensor
 from stable_baselines3.common.vec_env import DummyVecEnv
 
 from league import _raise_interrupt, _Spaces, resize_buffer, slots_of
-from smash_rl.env import CAN_RUN_HEADLESS, NonDaemonSubprocVecEnv, SmashEnv
+from smash_rl.env import CAN_RUN_HEADLESS, DEFAULT_FRAME_SKIP, NonDaemonSubprocVecEnv, SmashEnv, model_frame_skip
 from smash_rl.reaction import ReactionDelay
 from smash_rl.rewards import STAT_KEYS
 
@@ -134,7 +134,9 @@ def parse_args(lu):
     p.add_argument("--promote-at", type=float, default=0.7, help="win rate that moves a curriculum CPU up a level")
     p.add_argument("--rotate-every", type=int, default=50, help="updates between sets of rotating games")
     p.add_argument("--save-every", type=int, default=100, help="checkpoint every model every N updates")
-    p.add_argument("--frame-skip", type=int, default=3)
+    p.add_argument("--frame-skip", type=int, default=DEFAULT_FRAME_SKIP,
+                   help="frames each action is held (3 = 20 decisions/s, 2 = 30/s); learners keep it in the model and "
+                        "their gamma / GAE lambda are converted to keep the same horizon in seconds")
     p.add_argument("--base-port", type=int, default=51441, help="game i uses port base-port + i")
     p.add_argument("--gui", action="store_true", help="show the Dolphin windows (slower)")
     p.add_argument("--seed", type=int, default=0)
@@ -193,6 +195,11 @@ def main(lu=MK5678):
             ent = getattr(args, f"ent_{n}")
             if ent is not None:
                 model.ent_coef = ent
+            trained_skip = model_frame_skip(model)
+            if trained_skip != args.frame_skip:  # same horizon in seconds: gamma and lambda are per decision
+                model.gamma = model.gamma ** (args.frame_skip / trained_skip)
+                model.gae_lambda = model.gae_lambda ** (args.frame_skip / trained_skip)
+            model.frame_skip = args.frame_skip  # saved with the model; the play scripts use it
         model.reaction_ms = getattr(model, "reaction_ms", 0)
         model.set_logger(configure(os.path.join(run_dir, name), ["tensorboard"]))
         models[name] = model
@@ -201,7 +208,8 @@ def main(lu=MK5678):
         raise SystemExit("all models must use the same n_steps")
     print(f"run dir: {run_dir} | {args.hours:g} h | " + ", ".join(
         f"{n} ({lu.characters[n].lower()}, from {origin[n]}, "
-        + ("frozen" if n in FROZEN else f"lr {models[n].lr_schedule(1.0):g}, ent {models[n].ent_coef:g}")
+        + ("frozen" if n in FROZEN else f"lr {models[n].lr_schedule(1.0):g}, ent {models[n].ent_coef:g}, "
+           f"gamma {models[n].gamma:.4g}, every {args.frame_skip} frames")
         + f", reaction {models[n].reaction_ms:g} ms)" for n in MODELS), flush=True)
 
     cpu_level = {name: getattr(args, f"{name.lower()}_cpu_start") for name in CURRICULUM}
