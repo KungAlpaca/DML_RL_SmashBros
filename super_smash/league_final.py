@@ -6,10 +6,14 @@ agent, the level 9 CPU (random character) and other frozen MKs (MK3, MK6, MK10).
 league_mk5678.py; other teams' bots run inside the env (SmashEnv opponent_bot).
 
     MK5 vs MK5_OLD, MK9 vs MK9_OLD     two games each, always
-    4 more games                       a new set every --rotate-every updates (ROTATION)
+    MK9 vs CPU                         its own CPU level, from --mk9-cpu-start (5) up to 9: one level up
+                                       whenever it wins --promote-at of its last --promote-window games
+    3 more games                       a new set every --rotate-every updates (ROTATION)
 
-Kepiti's bot runs an LSTM on the CPU every frame and the 8 games step together, so all his games
-are in one set: the other three run at full speed (about 3x faster).
+MK9 (200 ms reaction) lost almost every game against the instant opponents and stopped learning, so
+it gets the CPU curriculum and, in the rotation, opponents it can beat sometimes (Kepiti's imitation
+model, MK10, MK6); MK5 keeps the hard ones. Kepiti's bot runs an LSTM on the CPU every frame and the
+8 games step together, so all his games are in one set: the others run at full speed.
 
 Usage:
     python league_final.py --mk5 models/alejandro/MK5.zip --mk9 models/alejandro/MK9.zip \\
@@ -31,16 +35,16 @@ FINAL = Lineup(
                 "MK3": "FOX", "MK6": "RANDOM", "MK10": "RANDOM", "CPU": "RANDOM"},
     frozen=("MK5_OLD", "MK9_OLD", "MK3", "MK6", "MK10"),
     new={},
-    curriculum={},
-    fixed=[("MK5", "MK5_OLD"), ("MK9", "MK9_OLD"), ("MK5", "MK5_OLD"), ("MK9", "MK9_OLD")],
+    curriculum={"MK9": 4},
+    fixed=[("MK5", "MK5_OLD"), ("MK9", "MK9_OLD"), ("MK5", "MK5_OLD"), ("MK9", "MK9_OLD"), ("MK9", "CPU")],
     rotation=[
-        [("MK5", "KEPITI_RL"), ("MK5", "KEPITI_IL"), ("MK9", "KEPITI_RL"), ("MK9", "KEPITI_IL")],
-        [("MK5", "GANONDORF"), ("MK9", "GANONDORF"), ("MK5", "CPU"), ("MK9", "CPU")],
-        [("MK5", "MK3"), ("MK9", "MK6"), ("MK5", "MK10"), ("MK9", "MK3")],
-        [("MK5", "MK6"), ("MK9", "MK10"), ("MK5", "GANONDORF"), ("MK9", "CPU")],
+        [("MK5", "KEPITI_RL"), ("MK5", "KEPITI_IL"), ("MK9", "KEPITI_IL")],
+        [("MK5", "GANONDORF"), ("MK5", "CPU"), ("MK9", "MK10")],
+        [("MK5", "MK3"), ("MK5", "MK10"), ("MK9", "MK6")],
+        [("MK5", "MK6"), ("MK5", "GANONDORF"), ("MK9", "MK10")],
     ],
     lrs={"MK5": 2e-5, "MK9": 5e-5},
-    cpu_start=9,
+    cpu_start=5,
     run_name="final_mk59",
     bots={
         "KEPITI_RL": ("kepiti", os.path.join(MODELS_DIR, "kepiti", "fox_rl_3h.pt")),

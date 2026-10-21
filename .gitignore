@@ -26,3 +26,6 @@ runs/
 
 # Emulators (downloaded by super_smash/setup.sh) and the Dolphin settings play.py keeps.
 super_smash/dolphin/
+
+# Poster: raw screenshots (the figures in Poster/fig are made from them) and LaTeX build files.
+

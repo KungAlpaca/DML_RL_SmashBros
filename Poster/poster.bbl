@@ -1,0 +1,81 @@
+\begin{thebibliography}{10}
+
+\bibitem{libmelee}
+{altf4} and {vladfi1}.
+\newblock libmelee: a {Python} {API} for {Super Smash Bros. Melee}.
+\newblock \url{github.com/altf4/libmelee}.
+
+\bibitem{curriculum}
+Y.~Bengio, J.~Louradour, R.~Collobert, and J.~Weston.
+\newblock Curriculum learning.
+\newblock In {\em International Conference on Machine Learning (ICML)}, 2009.
+
+\bibitem{dataset}
+{erickfm}.
+\newblock melee-ranked-replays: {Slippi} ranked replays.
+\newblock \url{huggingface.co/datasets/erickfm/melee-ranked-replays}.
+
+\bibitem{slippiai}
+V.~Firoiu.
+\newblock slippi-ai: imitation and reinforcement learning for {Super Smash
+  Bros. Melee}.
+\newblock \url{github.com/vladfi1/slippi-ai}.
+
+\bibitem{firoiu2018}
+V.~Firoiu, T.~Ju, and J.~B. Tenenbaum.
+\newblock At human speed: Deep reinforcement learning with action delay.
+\newblock {\em arXiv preprint arXiv:1810.07286}, 2018.
+
+\bibitem{firoiu2017}
+V.~Firoiu, W.~F. Whitney, and J.~B. Tenenbaum.
+\newblock Beating the world's best at {Super Smash Bros.} with deep
+  reinforcement learning.
+\newblock {\em arXiv preprint arXiv:1702.06230}, 2017.
+
+\bibitem{lstm}
+S.~Hochreiter and J.~Schmidhuber.
+\newblock Long short-term memory.
+\newblock {\em Neural Computation}, 9(8):1735--1780, 1997.
+
+\bibitem{seqtutor}
+N.~Jaques, S.~Gu, D.~Bahdanau, J.~M. Hern{\'a}ndez-Lobato, R.~E. Turner, and
+  D.~Eck.
+\newblock Sequence tutor: Conservative fine-tuning of sequence generation
+  models with {KL}-control.
+\newblock In {\em International Conference on Machine Learning (ICML)}, 2017.
+
+\bibitem{shaping}
+A.~Y. Ng, D.~Harada, and S.~Russell.
+\newblock Policy invariance under reward transformations: Theory and
+  application to reward shaping.
+\newblock In {\em International Conference on Machine Learning (ICML)}, 1999.
+
+\bibitem{slippi}
+{Project Slippi}.
+\newblock Slippi {Dolphin} (ishiiruka): a {GameCube} emulator for {Melee}.
+\newblock \url{github.com/project-slippi/Ishiiruka}.
+
+\bibitem{sb3}
+A.~Raffin, A.~Hill, A.~Gleave, A.~Kanervisto, M.~Ernestus, and N.~Dormann.
+\newblock {Stable-Baselines3}: Reliable reinforcement learning implementations.
+\newblock {\em Journal of Machine Learning Research}, 22(268):1--8, 2021.
+
+\bibitem{gae}
+J.~Schulman, P.~Moritz, S.~Levine, M.~I. Jordan, and P.~Abbeel.
+\newblock High-dimensional continuous control using generalized advantage
+  estimation.
+\newblock In {\em International Conference on Learning Representations (ICLR)},
+  2016.
+
+\bibitem{ppo}
+J.~Schulman, F.~Wolski, P.~Dhariwal, A.~Radford, and O.~Klimov.
+\newblock Proximal policy optimization algorithms.
+\newblock {\em arXiv preprint arXiv:1707.06347}, 2017.
+
+\bibitem{alphastar}
+O.~Vinyals et~al.
+\newblock Grandmaster level in {StarCraft II} using multi-agent reinforcement
+  learning.
+\newblock {\em Nature}, 575:350--354, 2019.
+
+\end{thebibliography}
